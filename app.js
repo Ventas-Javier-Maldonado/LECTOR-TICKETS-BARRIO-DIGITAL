@@ -1,29 +1,133 @@
-const $=id=>document.getElementById(id);
-const imageCanvas=$('imageCanvas'),overlay=$('overlay'),ctx=imageCanvas.getContext('2d'),octx=overlay.getContext('2d');
-let original=null,rotation=0,lines=[],nextId=1,drag=null,worker=null,busy=false;
-function status(s){$('status').textContent=s;}
-function escapeHTML(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
-function loadImage(file){if(!file)return;const url=URL.createObjectURL(file),im=new Image();im.onload=()=>{original=im;rotation=0;lines=[];render();drawImage();URL.revokeObjectURL(url);status('Imagen lista. Selecciona cada renglón con el dedo.');};im.onerror=()=>{URL.revokeObjectURL(url);status('No se pudo abrir la imagen. Intenta con JPG o PNG.');};im.src=url;}
-$('photo').addEventListener('change',e=>loadImage(e.target.files[0]));
-function drawImage(){if(!original)return;const w=original.naturalWidth,h=original.naturalHeight,scale=Math.min(1,1400/Math.max(w,h));const rotated=rotation%180!==0;imageCanvas.width=Math.round((rotated?h:w)*scale);imageCanvas.height=Math.round((rotated?w:h)*scale);overlay.width=imageCanvas.width;overlay.height=imageCanvas.height;ctx.setTransform(1,0,0,1,0,0);ctx.clearRect(0,0,imageCanvas.width,imageCanvas.height);ctx.translate(imageCanvas.width/2,imageCanvas.height/2);ctx.rotate(rotation*Math.PI/180);ctx.drawImage(original,-w*scale/2,-h*scale/2,w*scale,h*scale);ctx.setTransform(1,0,0,1,0,0);drawOverlay();}
-function drawOverlay(){octx.clearRect(0,0,overlay.width,overlay.height);octx.lineWidth=Math.max(2,overlay.width/450);for(const l of lines){octx.strokeStyle='#087a65';octx.fillStyle='#087a6530';octx.fillRect(l.rect.x,l.rect.y,l.rect.w,l.rect.h);octx.strokeRect(l.rect.x,l.rect.y,l.rect.w,l.rect.h);}if(drag){const r=rect(drag.start,drag.end);octx.strokeStyle='#ff9d1e';octx.strokeRect(r.x,r.y,r.w,r.h);}}
-function rect(a,b){return {x:Math.min(a.x,b.x),y:Math.min(a.y,b.y),w:Math.abs(a.x-b.x),h:Math.abs(a.y-b.y)};}
-function point(e){const r=overlay.getBoundingClientRect();return {x:Math.max(0,Math.min(overlay.width,(e.clientX-r.left)*overlay.width/r.width)),y:Math.max(0,Math.min(overlay.height,(e.clientY-r.top)*overlay.height/r.height))};}
-overlay.addEventListener('pointerdown',e=>{if(!original||busy)return;overlay.setPointerCapture(e.pointerId);drag={start:point(e),end:point(e)};drawOverlay();});
-overlay.addEventListener('pointermove',e=>{if(!drag)return;drag.end=point(e);drawOverlay();});
-overlay.addEventListener('pointerup',e=>{if(!drag)return;drag.end=point(e);const r=rect(drag.start,drag.end);drag=null;if(r.w>20&&r.h>8){lines.push({id:nextId++,rect:r,text:'',amount:''});render();}drawOverlay();});
-overlay.addEventListener('pointercancel',()=>{drag=null;drawOverlay();});
-for(const [id,delta] of [['left',-90],['right',90]])$(id).addEventListener('click',()=>{if(!original||busy)return;rotation=(rotation+delta+360)%360;lines=[];drawImage();render();status('Imagen girada. Selecciona nuevamente los renglones.');});
-$('reset').addEventListener('click',()=>{if(busy)return;lines=[];render();drawOverlay();});
-function cropData(r){const c=document.createElement('canvas');const marginX=Math.min(18,Math.round(r.w*.06)),marginY=Math.min(12,Math.round(r.h*.12));const x=Math.max(0,Math.floor(r.x-marginX)),y=Math.max(0,Math.floor(r.y-marginY)),w=Math.min(imageCanvas.width-x,Math.ceil(r.w+2*marginX)),h=Math.min(imageCanvas.height-y,Math.ceil(r.h+2*marginY));const scale=Math.min(3,1400/Math.max(w,h));c.width=Math.max(1,Math.round(w*scale));c.height=Math.max(1,Math.round(h*scale));const g=c.getContext('2d');g.fillStyle='white';g.fillRect(0,0,c.width,c.height);g.imageSmoothingQuality='high';g.drawImage(imageCanvas,x,y,w,h,0,0,c.width,c.height);return c.toDataURL('image/png');}
-function render(){const list=$('lineList');list.innerHTML=lines.map((l,i)=>`<div class="line"><img src="${cropData(l.rect)}" alt="Renglón ${i+1}"><div><label>Renglón ${i+1} · texto reconocido (editable)</label><input type="text" data-id="${l.id}" data-kind="text" value="${escapeHTML(l.text)}" placeholder="Pendiente de reconocer"></div><div class="linebuttons"><button class="danger" data-delete="${l.id}" ${busy?'disabled':''}>Quitar renglón</button></div></div>`).join('');$('empty').hidden=lines.length>0;$('read').disabled=!lines.length||busy;$('stop').disabled=!busy;list.querySelectorAll('[data-delete]').forEach(b=>b.addEventListener('click',()=>{lines=lines.filter(l=>l.id!==Number(b.dataset.delete));render();drawOverlay();}));list.querySelectorAll('input[data-kind=text]').forEach(input=>input.addEventListener('input',()=>{const l=lines.find(x=>x.id===Number(input.dataset.id));if(l)l.text=input.value;renderAmounts();}));renderAmounts();$('selectionHint').textContent=lines.length?`${lines.length} renglón(es) seleccionados.`:'Selecciona un renglón arrastrando sobre la imagen.';}
-function renderAmounts(){const container=$('amounts');const focus=document.activeElement;const focusedId=focus?.dataset?.amount;const selection=focus&&'selectionStart'in focus?focus.selectionStart:null;container.innerHTML=lines.map((l,i)=>`<div style="display:grid;grid-template-columns:1fr 110px;gap:10px;margin-bottom:10px;align-items:end"><div><label>Renglón ${i+1}: ${escapeHTML(l.text||'Sin lectura')}</label></div><div><label>Importe ($)</label><input type="number" min="0" step=".01" data-amount="${l.id}" value="${escapeHTML(l.amount)}" placeholder="0.00"></div></div>`).join('');container.querySelectorAll('[data-amount]').forEach(input=>input.addEventListener('input',()=>{const l=lines.find(x=>x.id===Number(input.dataset.amount));if(l){l.amount=input.value;updateTotal();}}));if(focusedId){const next=container.querySelector(`[data-amount="${focusedId}"]`);if(next){next.focus();if(selection!==null)try{next.setSelectionRange(selection,selection);}catch{}}}updateTotal();}
-function updateTotal(){const total=lines.reduce((s,l)=>s+(Number(l.amount)||0),0);$('total').textContent=`Total revisado: ${total.toLocaleString('es-MX',{style:'currency',currency:'MXN'})}`;}
-function setBusy(v){busy=v;render();}
-$('read').addEventListener('click',()=>{if(busy||!lines.length)return;worker=new Worker('./ocr-worker.js',{type:'module'});setBusy(true);status('Iniciando reconocimiento…');worker.onmessage=({data})=>{if(data.type==='status'||data.type==='progress')status(data.message);if(data.type==='result'){const l=lines.find(x=>x.id===data.id);if(l){l.text=data.text;render();}}if(data.type==='done'){status('Lectura terminada. Revisa y corrige cada renglón y sus importes.');finish();}if(data.type==='error'){status(`No se pudo completar el reconocimiento: ${data.message}. Comprueba la conexión inicial y memoria del teléfono.`);finish();}if(data.type==='cancelled'){status('Reconocimiento cancelado.');finish();}};worker.onerror=e=>{status(`Error del lector: ${e.message||'No se pudo iniciar el modelo'}`);finish();};worker.postMessage({type:'read',lines:lines.map(l=>({id:l.id,data:cropData(l.rect)}))});});
-function finish(){worker?.terminate();worker=null;setBusy(false);}
-$('stop').addEventListener('click',()=>{if(worker){worker.terminate();worker=null;}setBusy(false);status('Reconocimiento detenido. Los renglones ya leídos permanecen disponibles.');});
-function report(){return {aplicacion:'Lector de Notas Barrio Digital',fechaExportacion:new Date().toISOString(),requiereRevision:true,renglones:lines.map(l=>({texto:l.text,importe:l.amount===''?null:Number(l.amount)})),totalRevisado:lines.reduce((s,l)=>s+(Number(l.amount)||0),0)};}
-$('download').addEventListener('click',()=>{const url=URL.createObjectURL(new Blob([JSON.stringify(report(),null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='nota-revisada.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
-$('copy').addEventListener('click',async()=>{const r=report();const text=r.renglones.map((l,i)=>`${i+1}. ${l.text||'(sin lectura)'} | ${l.importe===null?'sin importe':'$'+l.importe.toFixed(2)}`).join('\n')+`\nTOTAL REVISADO: $${r.totalRevisado.toFixed(2)}`;try{await navigator.clipboard.writeText(text);status('Texto revisado copiado.');}catch{status('No se pudo copiar automáticamente. Usa Exportar revisión.');}});
-render();
+
+function renderAmounts() {
+
+    const container = $("amounts");
+
+    const focus = document.activeElement;
+
+    const focusedId = focus?.dataset?.amount;
+
+    const selection =
+        focus && "selectionStart" in focus
+            ? focus.selectionStart
+            : null;
+
+    container.innerHTML = lines.map((line, index) => {
+
+        return `
+            <div
+                style="
+                    display:flex;
+                    flex-direction:column;
+                    gap:10px;
+                    margin-bottom:14px;
+                    padding:15px;
+                    border:1px solid #d7e1eb;
+                    border-radius:12px;
+                    width:100%;
+                    box-sizing:border-box;
+                "
+            >
+
+                <div>
+                    <label>
+                        Renglón ${index + 1}
+                    </label>
+
+                    <p
+                        style="
+                            margin:6px 0;
+                            overflow-wrap:anywhere;
+                        "
+                    >
+                        ${escapeHTML(
+                            line.text || "Sin lectura"
+                        )}
+                    </p>
+                </div>
+
+                <div>
+                    <label>
+                        Importe ($)
+                    </label>
+
+                    <input
+                        type="number"
+                        min="0"
+                        step=".01"
+                        data-amount="${line.id}"
+                        value="${escapeHTML(line.amount)}"
+                        placeholder="0.00"
+                        style="
+                            width:100%;
+                            box-sizing:border-box;
+                        "
+                    >
+                </div>
+
+            </div>
+        `;
+
+    }).join("");
+
+    container
+        .querySelectorAll("[data-amount]")
+        .forEach(input => {
+
+            input.addEventListener("input", () => {
+
+                const line = lines.find(
+                    item =>
+                        item.id === Number(
+                            input.dataset.amount
+                        )
+                );
+
+                if (line) {
+
+                    line.amount = input.value;
+
+                    updateTotal();
+
+                }
+
+            });
+
+        });
+
+    if (focusedId) {
+
+        const next = container.querySelector(
+            `[data-amount="${focusedId}"]`
+        );
+
+        if (next) {
+
+            next.focus();
+
+            if (selection !== null) {
+
+                try {
+
+                    next.setSelectionRange(
+                        selection,
+                        selection
+                    );
+
+                } catch (error) {
+
+                    // Los campos numéricos no admiten
+                    // selección de texto en todos
+                    // los navegadores.
+
+                }
+
+            }
+
+        }
+
+    }
+
+    updateTotal();
+
+}
