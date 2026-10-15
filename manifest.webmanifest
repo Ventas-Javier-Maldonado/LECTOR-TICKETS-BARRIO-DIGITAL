@@ -1,0 +1,11 @@
+{
+  "name": "Lector de Notas Barrio Digital",
+  "short_name": "Lector de Notas",
+  "description": "Lectura y revisión de notas de compra en español",
+  "lang": "es-MX",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f3f7fa",
+  "theme_color": "#103c61"
+}
