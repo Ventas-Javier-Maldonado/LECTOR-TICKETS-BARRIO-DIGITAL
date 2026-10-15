@@ -15,7 +15,7 @@ let selections = [];
 let drawing = null;
 let items = [];
 let nextId = 1;
-let ocrWorker = null;
+let ocrController = null;
 let busy = false;
 let cancelled = false;
 
@@ -204,192 +204,115 @@ function crop(rect) {
 
 
 /* =========================================================
-   OCR EXPERIMENTAL DE ESCRITURA MANUSCRITA
-   TrOCR por renglón; Tesseract como respaldo.
-   Primera ejecución requiere internet.
+   OCR.SPACE ENGINE 3 POR CLOUDFLARE WORKER
+   La clave privada permanece exclusivamente en Cloudflare.
 ========================================================= */
 
-let handwritingReader = null;
+const OCR_ENDPOINT =
+    "https://frosty-forest-c560.ventas-rodrigomaldonado.workers.dev/";
 
-async function getHandwritingReader() {
-    if (handwritingReader) return handwritingReader;
+function imagenParaOCR() {
+    if (!selections.length) return photoCanvas;
 
-    setStatus(
-        "Descargando modelo de escritura manuscrita (primera vez puede tardar)..."
-    );
-
-    const library = await import(
-        "https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2"
-    );
-
-    handwritingReader = await library.pipeline(
-        "image-to-text",
-        "Xenova/trocr-small-handwritten",
-        { quantized: true }
-    );
-
-    return handwritingReader;
-}
-
-function cropTextLine(box) {
-    const marginX = Math.max(
-        8,
-        Math.round((box.x1 - box.x0) * .025)
-    );
-
-    const marginY = Math.max(
-        7,
-        Math.round((box.y1 - box.y0) * .3)
-    );
-
-    const x = Math.max(0, Math.floor(box.x0 - marginX));
-    const y = Math.max(0, Math.floor(box.y0 - marginY));
-
-    const w = Math.min(
-        photoCanvas.width - x,
-        Math.ceil(box.x1 - box.x0 + 2 * marginX)
-    );
-
-    const h = Math.min(
-        photoCanvas.height - y,
-        Math.ceil(box.y1 - box.y0 + 2 * marginY)
-    );
-
-    if (w < 4 || h < 4) return null;
-
-    const c = document.createElement("canvas");
-    const factor = Math.min(3, 1400 / Math.max(w, h));
-
-    c.width = Math.round(w * factor);
-    c.height = Math.round(h * factor);
-
-    const g = c.getContext("2d");
-
+    const recortes = selections.map(rect => crop(rect));
+    const margen = 12;
+    const ancho = Math.max(...recortes.map(c => c.width));
+    const alto = recortes.reduce((sum, c) => sum + c.height + margen, margen);
+    const unido = document.createElement("canvas");
+    unido.width = ancho + margen * 2;
+    unido.height = alto;
+    const g = unido.getContext("2d");
     g.fillStyle = "white";
-    g.fillRect(0, 0, c.width, c.height);
-
-    g.drawImage(
-        photoCanvas,
-        x, y, w, h,
-        0, 0, c.width, c.height
-    );
-
-    return c;
+    g.fillRect(0, 0, unido.width, unido.height);
+    let y = margen;
+    recortes.forEach(c => {
+        g.drawImage(c, margen, y);
+        y += c.height + margen;
+    });
+    return unido;
 }
+
+async function prepararArchivoOCR(canvas) {
+    // Comprimir a menos de 1 MB para la modalidad gratuita habitual.
+    let escala = Math.min(1, 1600 / Math.max(canvas.width, canvas.height));
+    for (let intento = 0; intento < 8; intento++) {
+        const copia = document.createElement("canvas");
+        copia.width = Math.max(1, Math.round(canvas.width * escala));
+        copia.height = Math.max(1, Math.round(canvas.height * escala));
+        const g = copia.getContext("2d");
+        g.fillStyle = "white";
+        g.fillRect(0, 0, copia.width, copia.height);
+        g.drawImage(canvas, 0, 0, copia.width, copia.height);
+        const calidad = Math.max(.55, .88 - intento * .05);
+        const blob = await new Promise(resolve => copia.toBlob(resolve, "image/jpeg", calidad));
+        if (!blob) throw new Error("No se pudo preparar la fotografía.");
+        if (blob.size <= 950000) {
+            return new File([blob], "nota.jpg", { type: "image/jpeg" });
+        }
+        escala *= .82;
+    }
+    throw new Error("La fotografía es demasiado grande para enviarla.");
+}
+
+$("cancel").addEventListener("click", () => {
+    if (!busy) return;
+    cancelled = true;
+    if (ocrController) ocrController.abort();
+    setStatus("Lectura cancelada.");
+});
 
 $("recognize").addEventListener("click", async () => {
     if (!sourceImage || busy) return;
-
     busy = true;
     cancelled = false;
+    ocrController = new AbortController();
     updateButtons();
 
-    let worker = null;
-
     try {
-        if (typeof Tesseract === "undefined") {
-            throw new Error(
-                "No se cargó Tesseract. Revisa la conexión."
-            );
-        }
-
-        setStatus("Localizando renglones...");
-
-        worker = await Tesseract.createWorker("spa", 1);
-        ocrWorker = worker;
-
-        const original = await worker.recognize(photoCanvas);
-
+        setStatus("Preparando fotografía para reconocimiento...");
+        const archivo = await prepararArchivoOCR(imagenParaOCR());
         if (cancelled) return;
 
-        const fallbackLines = (original.data.text || "")
-            .split(/\r?\n/)
-            .map(x => x.trim())
+        const formulario = new FormData();
+        formulario.append("file", archivo);
+        setStatus("Leyendo escritura con OCR.space Engine 3...");
+
+        const respuesta = await fetch(OCR_ENDPOINT, {
+            method: "POST",
+            body: formulario,
+            signal: ocrController.signal
+        });
+        const resultado = await respuesta.json();
+        if (cancelled) return;
+
+        if (!respuesta.ok || resultado.IsErroredOnProcessing) {
+            const detalle = resultado.ErrorMessage || resultado.ErrorDetails || resultado.error;
+            throw new Error(Array.isArray(detalle) ? detalle.join("; ") :
+                (detalle || `Respuesta HTTP ${respuesta.status}`));
+        }
+
+        const texto = (resultado.ParsedResults || [])
+            .map(r => r.ParsedText || "")
+            .join("\n");
+        const lineas = texto.split(/\r?\n/)
+            .map(linea => linea.trim())
             .filter(Boolean);
 
-        let regions = [];
-
-        if (selections.length) {
-            regions = selections.map(r => crop(r));
-        } else {
-            const lines = original.data.lines || [];
-
-            regions = lines
-                .filter(x => x.bbox)
-                .map(x => cropTextLine(x.bbox))
-                .filter(Boolean);
-        }
-
-        let reader = null;
-
-        try {
-            reader = await getHandwritingReader();
-        } catch (error) {
-            setStatus(
-                "No se pudo cargar TrOCR; usando lectura tradicional en español..."
-            );
-        }
-
-        if (cancelled) return;
-
-        const recognized = [];
-
-        if (reader && regions.length) {
-            for (let i = 0; i < regions.length; i++) {
-                if (cancelled) break;
-
-                setStatus(
-                    `Reconociendo escritura ${i + 1} de ${regions.length}...`
-                );
-
-                try {
-                    const result = await reader(
-                        regions[i].toDataURL("image/png")
-                    );
-
-                    const line = String(
-                        result?.[0]?.generated_text || ""
-                    ).trim();
-
-                    recognized.push(parseRow(line));
-
-                } catch (error) {
-                    recognized.push(parseRow(""));
-                }
-            }
-        } else {
-            for (const line of fallbackLines) {
-                recognized.push(parseRow(line));
-            }
-        }
-
-        if (!cancelled) {
-            items = recognized;
-            renderItems();
-
-            setStatus(
-                reader && regions.length
-                    ? `Prueba manuscrita terminada: ${items.length} renglón(es). Revisa cada palabra y precio: el modelo aún no está especializado en español.`
-                    : `Lectura tradicional terminada: ${items.length} renglón(es). Revisa los resultados.`
-            );
-        }
-
+        // El total escrito en el ticket es una referencia, no un producto.
+        const productos = lineas.filter(linea =>
+            !/^(?:total|subtotal|suma|importe\s+total)\s*[:$\s\d.,]*$/i.test(linea)
+        );
+        items = productos.map(parseRow);
+        renderItems();
+        setStatus(items.length
+            ? `Lectura terminada: ${items.length} renglón(es). Revisa productos, cantidades e importes antes de enviar.`
+            : "No se reconocieron renglones. Gira la foto o prueba con mejor iluminación.");
     } catch (error) {
         if (!cancelled) {
-            setStatus(
-                `Error de reconocimiento: ${error.message}`
-            );
+            setStatus(`Error de reconocimiento: ${error.message}`);
         }
-
     } finally {
-        ocrWorker = null;
-
-        if (worker) {
-            try {
-                await worker.terminate();
-            } catch (_) {}
-        }
-
+        ocrController = null;
         busy = false;
         updateButtons();
     }
