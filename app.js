@@ -272,34 +272,124 @@ $("cancel").addEventListener("click", () => {
     if (ocrWorker) ocrWorker.terminate().catch(() => {});
 });
 
+
 /* =========================================================
-   INTERPRETACIÓN CONSERVADORA DE RENGLONES
-   Nunca adivina precios ni productos.
+   INTERPRETACIÓN DE RENGLONES
+   CANTIDAD · UNIDAD · PRODUCTO · IMPORTE
 ========================================================= */
 
 function parseRow(raw) {
-    let text = raw.replace(/\s+/g, " ").trim();
-    let amount = "";
-    const amountMatch = text.match(/(?:\$\s*|(?:total|importe)\s*:?\s*)(\d[\d,.]*)(?:\s*(?:mxn|pesos))?\s*$/i);
-    if (amountMatch) {
-        const candidate = amountMatch[1].replace(/,/g, "");
-        if (/^\d+(?:\.\d{1,2})?$/.test(candidate)) {
-            amount = candidate;
-            text = text.slice(0, amountMatch.index).trim();
-        }
-    }
 
+    let text = String(raw || "")
+        .replace(/\s+/g, " ")
+        .trim();
+
+    let amount = "";
     let quantity = "";
     let unit = "";
-    const quantityMatch = text.match(/^(\d+(?:[.,]\d+)?)\s*(kg|kilos?|g|gr|gramos?|pzas?|piezas?|lts?|litros?|ml)?\b\s*/i);
-    if (quantityMatch) {
-        quantity = quantityMatch[1].replace(",", ".");
-        unit = quantityMatch[2] || "";
-        text = text.slice(quantityMatch[0].length).trim();
+
+    // 1. Detectar precios con símbolo $
+    // o palabras como total e importe.
+
+    let amountMatch = text.match(
+        /(?:\$\s*|(?:total|importe)\s*:?\s*)(\d[\d,.]*)(?:\s*(?:mxn|pesos))?\s*$/i
+    );
+
+    // 2. Detectar precios al final del renglón
+    // aunque no tengan símbolo $.
+    // Solo cuando hay texto antes del precio.
+
+    if (!amountMatch) {
+
+        amountMatch = text.match(
+            /\s+(\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{2})?|\d+(?:[.,]\d{1,2})?)\s*$/
+        );
+
     }
 
-    return { id: nextId++, raw, product: text, quantity, unit, amount };
+    if (amountMatch) {
+
+        let candidate = amountMatch[1];
+
+        // Normalizar formatos de moneda.
+        if (
+            candidate.includes(",") &&
+            candidate.includes(".")
+        ) {
+
+            candidate = candidate.replace(/,/g, "");
+
+        } else if (
+            /^\d+,\d{1,2}$/.test(candidate)
+        ) {
+
+            candidate = candidate.replace(",", ".");
+
+        } else if (
+            /^\d{1,3}(?:,\d{3})+$/.test(candidate)
+        ) {
+
+            candidate = candidate.replace(/,/g, "");
+
+        }
+
+        if (
+            /^\d+(?:\.\d{1,2})?$/.test(candidate)
+        ) {
+
+            amount = candidate;
+
+            text = text.slice(
+                0,
+                amountMatch.index
+            ).trim();
+
+        }
+
+    }
+
+    // 3. Detectar cantidad y unidad.
+    // Exigir unidad o texto adicional para
+    // evitar confundir una cifra con un producto.
+
+    const quantityMatch = text.match(
+        /^(\d+(?:[.,]\d+)?)\s*(kg|kilos?|g|gr|gramos?|pzas?|piezas?|lts?|litros?|ml)\b\s*/i
+    );
+
+    if (quantityMatch) {
+
+        quantity = quantityMatch[1]
+            .replace(",", ".");
+
+        unit = quantityMatch[2];
+
+        text = text.slice(
+            quantityMatch[0].length
+        ).trim();
+
+    }
+
+    // 4. Conservar el texto original.
+    // No inventar productos ni importes.
+
+    return {
+
+        id: nextId++,
+
+        raw: raw,
+
+        product: text,
+
+        quantity: quantity,
+
+        unit: unit,
+
+        amount: amount
+
+    };
+
 }
+
 
 /* =========================================================
    REVISIÓN Y TOTALES
