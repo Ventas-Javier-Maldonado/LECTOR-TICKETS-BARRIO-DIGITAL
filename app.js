@@ -273,6 +273,7 @@ $("cancel").addEventListener("click", () => {
 });
 
 
+
 /* =========================================================
    INTERPRETACIÓN DE RENGLONES
    CANTIDAD · UNIDAD · PRODUCTO · IMPORTE
